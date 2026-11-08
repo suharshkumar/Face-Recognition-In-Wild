@@ -59,7 +59,8 @@ class Recognizer:
         self.phase3 = load_backbone_state(w / "phase3_adapted_backbone.pt")
         phase1_path = w / "recognition_backbone.pt"
         self.phase1 = load_backbone_state(phase1_path) if phase1_path.is_file() else None
-        self.backbone = iresnet100().eval()
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.backbone = iresnet100().eval().to(self.device)
         self.set_alpha(0.0)
 
     def set_alpha(self, alpha):
@@ -85,14 +86,19 @@ class Recognizer:
         x = torch.from_numpy(np.stack(crops).astype(np.float32)).permute(0, 3, 1, 2).div(127.5).sub(1)
         out = []
         for i in range(0, len(x), 32):
-            batch = x[i:i + 32]
+            batch = x[i:i + 32].to(self.device)
             e = self.backbone(batch) + self.backbone(torch.flip(batch, dims=[3]))
-            out.append(torch.nn.functional.normalize(e, dim=1))
+            out.append(torch.nn.functional.normalize(e, dim=1).cpu())
         return torch.cat(out).numpy()
 
 
 def gallery_faces(rec, gallery_dir):
-    """Return names, labels and, per image, the largest Phase 0 box (None for tight crops)."""
+    """Return names, labels and, per image, the largest Phase 0 box (None for tight crops).
+
+    Detections are cached in ``<gallery_dir>/.phase0_boxes.json`` so later runs skip Phase 0.
+    """
+    cache_path = Path(gallery_dir) / ".phase0_boxes.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.is_file() else {}
     names, labels, items = [], [], []
     for person in sorted(p for p in Path(gallery_dir).iterdir() if p.is_dir()):
         name = person.name.replace("_", " ")
@@ -100,12 +106,20 @@ def gallery_faces(rec, gallery_dir):
             rgb = read_rgb(path)
             if rgb is None:
                 continue
-            found = rec.faces(rgb)
-            box = max(found, key=lambda f: (f[0][2] - f[0][0]) * (f[0][3] - f[0][1]))[0] if found else None
+            key = f"{person.name}/{path.name}"
+            if key not in cache:
+                found = rec.faces(rgb)
+                largest = max(found, key=lambda f: (f[0][2] - f[0][0]) * (f[0][3] - f[0][1]))[0] if found else None
+                cache[key] = None if largest is None else [float(v) for v in largest]
+                if len(cache) % 100 == 0:
+                    cache_path.write_text(json.dumps(cache))
+                    print(f"  Phase 0 on gallery: {len(cache)} images", flush=True)
+            box = None if cache[key] is None else np.array(cache[key], np.float32)
             if name not in names:
                 names.append(name)
             labels.append(names.index(name))
             items.append((rgb, box))
+    cache_path.write_text(json.dumps(cache))
     print(f"Gallery: {len(items)} images of {len(names)} people "
           f"({sum(b is None for _, b in items)} without a detected face)", flush=True)
     return names, np.array(labels), items
@@ -145,18 +159,24 @@ def leave_one_out(names, labels, emb):
 
 
 def calibrate(rec, names, labels, items):
-    best = None
-    alphas = ALPHAS if rec.phase1 is not None else [0.0]
-    for alpha in alphas:
-        rec.set_alpha(alpha)
-        for scale in SCALES:
+    """Pick the crop scale at alpha=0, then the blend weight at that scale."""
+    results = {}
+
+    def trial(alpha, scale):
+        if (alpha, scale) not in results:
+            rec.set_alpha(alpha)
             acc, threshold, tar, probes = leave_one_out(names, labels, embed_gallery(rec, items, scale))
             print(f"alpha={alpha:.2f} scale={scale:.1f}  rank-1={100 * acc:.1f}%  "
                   f"threshold@1%FAR={threshold:.3f}  TAR={100 * tar:.1f}%  (probes={probes})", flush=True)
-            if best is None or (acc, tar) > (best[0], best[1]):
-                best = (acc, tar, alpha, scale, threshold)
-    print(f"Chosen alpha={best[2]:.2f}, scale={best[3]:.1f}, threshold={best[4]:.3f}")
-    return best[2], best[3], best[4]
+            results[(alpha, scale)] = (acc, tar, threshold)
+        return results[(alpha, scale)]
+
+    scale = max(SCALES, key=lambda sc: trial(0.0, sc)[:2])
+    alphas = ALPHAS if rec.phase1 is not None else [0.0]
+    alpha = max(alphas, key=lambda a: trial(a, scale)[:2])
+    threshold = results[(alpha, scale)][2]
+    print(f"Chosen alpha={alpha:.2f}, scale={scale:.1f}, threshold={threshold:.3f}")
+    return alpha, scale, threshold
 
 
 def main():

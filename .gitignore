@@ -27,3 +27,5 @@ evaluation_results/
 .idea/
 .vscode/
 pretrained/
+recognition_run.log
+recognition_results/
