@@ -70,6 +70,25 @@ The script runs Phase 0 → 1 → 2 → 3 and skips any phase whose checkpoint a
 exists (use `--retrain_phase1`, `--retrain_all`, etc. to force retraining).
 Multi-GPU training uses `torchrun`.
 
+## Improved recognition (`recognize.py`)
+
+Uses only our own trained weights (no retraining). Gallery and test images go
+through the same Phase 0 detection and cropping, each crop is embedded by our
+IResNet-100 with horizontal-flip averaging, and identities are matched by
+cosine similarity. Two settings are chosen on the gallery by leave-one-out:
+the box widening `scale` (so crops resemble the LFW-style training images) and
+`alpha`, a weight-space interpolation between our checkpoints,
+`theta = (1 - alpha) * phase3 + alpha * phase1`.
+
+```bash
+python recognize.py --gallery_dir path/to/gallery --calibrate
+python recognize.py --gallery_dir path/to/gallery --input_dir path/to/test_images \
+  --truth truth.csv --output_dir recognition_results
+```
+
+`truth.csv` (optional) has columns `image,names`, with names separated by `;`
+and spelled like the gallery folder names.
+
 ## Evaluation results
 
 Full pipeline, detector threshold 0.05, IoU ≥ 0.5 (details in the project report).

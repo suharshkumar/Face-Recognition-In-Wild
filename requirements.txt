@@ -4,5 +4,5 @@ torch>=2.1
 torchvision>=0.16
 numpy>=1.24
 pillow>=10.0
-# Optional: the YuNet/OpenCV detector backend in models/detector.py
-# opencv-python>=4.8
+# Improved recognition (recognize.py)
+opencv-python>=4.8
