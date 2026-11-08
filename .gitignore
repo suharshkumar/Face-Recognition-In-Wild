@@ -1,0 +1,28 @@
+# Python and virtual environments
+__pycache__/
+*.pyc
+.venv*/
+venv*/
+
+# Datasets
+Face_Dataset/
+Test_dataser/
+WIDER_val/
+*.zip
+*.tar
+*.gz
+
+# Checkpoints and weights
+checkpoints/
+weights/
+
+# Generated outputs
+results/
+inference_results/
+detector_results/
+evaluation_results/
+
+# System and editor files
+.DS_Store
+.idea/
+.vscode/
