@@ -54,6 +54,19 @@ def prepare_casia(data_dir, repo="SaffalPoosh/casia_web_face", shards=20, parque
     return [p for p, _ in pairs], [int(l) for _, l in pairs]
 
 
+def index_image_folder(image_dir):
+    """Index a folder-per-identity dataset (e.g. Kaggle webface_112x112/<id>/*.jpg)."""
+    people = sorted(d for d in Path(image_dir).iterdir() if d.is_dir())
+    paths, labels = [], []
+    for label, person in enumerate(people):
+        for f in sorted(person.iterdir()):
+            if f.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}:
+                paths.append(str(f)); labels.append(label)
+    if not paths:
+        raise SystemExit(f"No images found in {image_dir}; point --image_dir at the folder that holds one sub-folder per person")
+    return paths, labels
+
+
 class LowResolution:
     """Randomly shrink and re-enlarge, imitating small faces in crowd photos."""
 
@@ -103,6 +116,7 @@ def export_backbone(backbone, path, note):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="/content/casia")
+    ap.add_argument("--image_dir", help="folder with one sub-folder of images per person (e.g. Kaggle webface_112x112)")
     ap.add_argument("--parquet_dir", help="local folder with the downloaded dataset (contains data/train-*.parquet)")
     ap.add_argument("--prepare_only", action="store_true", help="unpack the images and exit (run on a CPU node)")
     ap.add_argument("--init", default="weights/recognition_backbone.pt", help="our Phase 1 checkpoint to start from")
@@ -117,7 +131,10 @@ def main():
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    paths, labels = prepare_casia(args.data_dir, parquet_dir=args.parquet_dir)
+    if args.image_dir:
+        paths, labels = index_image_folder(args.image_dir)
+    else:
+        paths, labels = prepare_casia(args.data_dir, parquet_dir=args.parquet_dir)
     if args.prepare_only:
         print(f"Prepared {len(paths)} images in {args.data_dir}"); return
     num_classes = max(labels) + 1
