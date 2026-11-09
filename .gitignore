@@ -31,3 +31,5 @@ recognition_run.log
 recognition_results/
 finetune_run.log
 recognition_results_celeb/
+recognition_casia.log
+recognition_results_casia/
