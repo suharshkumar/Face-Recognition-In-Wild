@@ -12,7 +12,7 @@ unaligned Phase 0 box crops used at inference.
         --init weights/recognition_backbone.pt --out_dir /content/drive/MyDrive/frw_phase1
 """
 
-import argparse, io, math, os, random, time
+import argparse, io, math, os, random, shutil, time
 from pathlib import Path
 
 import torch
@@ -154,22 +154,34 @@ def main():
 
     step = 0
     last = out / "last.pt"
+    resumed = False
     if last.is_file():
-        ck = torch.load(last, map_location=device, weights_only=False)
-        backbone.load_state_dict(ck["backbone"]); loss_fn.load_state_dict(ck["loss_fn"])
-        optimizer.load_state_dict(ck["optimizer"]); scheduler.load_state_dict(ck["scheduler"])
-        scaler.load_state_dict(ck["scaler"]); step = ck["step"]
-        print(f"Resumed from step {step}", flush=True)
-    else:
+        try:
+            ck = torch.load(last, map_location=device, weights_only=False)
+            backbone.load_state_dict(ck["backbone"]); loss_fn.load_state_dict(ck["loss_fn"])
+            optimizer.load_state_dict(ck["optimizer"]); scheduler.load_state_dict(ck["scheduler"])
+            scaler.load_state_dict(ck["scaler"]); step = ck["step"]
+            resumed = True
+            print(f"Resumed from step {step}", flush=True)
+        except Exception as exc:  # a save interrupted by a disconnect leaves an empty or partial file
+            bad = last.with_name("last.pt.corrupt")
+            os.replace(last, bad)
+            print(f"WARNING: could not read {last} ({exc!r}); moved it to {bad} and starting from --init", flush=True)
+    if not resumed:
         ck = torch.load(args.init, map_location="cpu", weights_only=False)
         state = ck.get("backbone_state", ck.get("backbone"))
         backbone.load_state_dict({k.removeprefix("module."): v for k, v in state.items()})
         print(f"Initialised backbone from {args.init}", flush=True)
 
     def save():
+        # Write to local disk first, then copy: writing straight to a mounted
+        # Google Drive can leave a truncated file if the session drops.
+        local = Path("/tmp") / f"frw_last_{os.getpid()}.pt"
         torch.save({"backbone": backbone.state_dict(), "loss_fn": loss_fn.state_dict(), "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(), "step": step}, str(last) + ".tmp")
+                    "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(), "step": step}, local)
+        shutil.copyfile(local, str(last) + ".tmp")
         os.replace(str(last) + ".tmp", last)
+        local.unlink(missing_ok=True)
 
     dataset = FaceFolder(paths, labels)
     while step < total_steps:
