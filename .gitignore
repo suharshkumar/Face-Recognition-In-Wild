@@ -29,3 +29,5 @@ evaluation_results/
 pretrained/
 recognition_run.log
 recognition_results/
+finetune_run.log
+recognition_results_celeb/

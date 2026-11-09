@@ -52,13 +52,16 @@ def read_rgb(path):
 
 
 class Recognizer:
-    def __init__(self, weights_dir, det_threshold=0.3):
+    def __init__(self, weights_dir, det_threshold=0.3, backbone_path=None):
         w = Path(weights_dir)
         self.detector = TorchvisionFaceDetector(checkpoint_path=str(w / "face_detector.pt")).eval()
         self.det_threshold = det_threshold
-        self.phase3 = load_backbone_state(w / "phase3_adapted_backbone.pt")
-        phase1_path = w / "recognition_backbone.pt"
-        self.phase1 = load_backbone_state(phase1_path) if phase1_path.is_file() else None
+        if backbone_path:  # a single checkpoint, e.g. the fine-tuned one; no blending
+            self.phase3, self.phase1 = load_backbone_state(backbone_path), None
+        else:
+            self.phase3 = load_backbone_state(w / "phase3_adapted_backbone.pt")
+            phase1_path = w / "recognition_backbone.pt"
+            self.phase1 = load_backbone_state(phase1_path) if phase1_path.is_file() else None
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         self.backbone = iresnet100().eval().to(self.device)
         self.set_alpha(0.0)
@@ -74,8 +77,14 @@ class Recognizer:
         self.alpha = alpha
 
     @torch.no_grad()
-    def faces(self, rgb):
-        """Phase 0 detections as a list of (box, score)."""
+    def faces(self, rgb, small=False):
+        """Phase 0 detections as a list of (box, score).
+
+        ``small`` runs the detector at a lower internal resolution, which is
+        enough for gallery photos where the face fills much of the image.
+        """
+        transform = self.detector.model.transform
+        transform.min_size, transform.max_size = ((480,), 800) if small else ((800,), 1333)
         tensor = torch.from_numpy(rgb).permute(2, 0, 1).float().div(127.5).sub(1).unsqueeze(0)
         boxes, scores, _ = self.detector(tensor, score_threshold=self.det_threshold)
         return [(b, float(s)) for b, s in zip(boxes.numpy(), scores.numpy())]
@@ -108,7 +117,7 @@ def gallery_faces(rec, gallery_dir):
                 continue
             key = f"{person.name}/{path.name}"
             if key not in cache:
-                found = rec.faces(rgb)
+                found = rec.faces(rgb, small=True)
                 largest = max(found, key=lambda f: (f[0][2] - f[0][0]) * (f[0][3] - f[0][1]))[0] if found else None
                 cache[key] = None if largest is None else [float(v) for v in largest]
                 if len(cache) % 100 == 0:
@@ -192,9 +201,10 @@ def main():
     ap.add_argument("--det_threshold", type=float, default=0.3)
     ap.add_argument("--truth", help="CSV with columns image,names (names separated by ';')")
     ap.add_argument("--calibrate", action="store_true")
+    ap.add_argument("--backbone", help="use this single backbone checkpoint instead of the Phase 3/Phase 1 blend")
     args = ap.parse_args()
 
-    rec = Recognizer(args.weights_dir, args.det_threshold)
+    rec = Recognizer(args.weights_dir, args.det_threshold, args.backbone)
     names, labels, items = gallery_faces(rec, args.gallery_dir)
     alpha, scale, threshold = args.alpha, args.scale, args.threshold
     if None in (alpha, scale, threshold):
