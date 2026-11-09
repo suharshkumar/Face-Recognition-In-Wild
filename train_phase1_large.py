@@ -24,24 +24,30 @@ from losses.broadface_queue import BroadFaceCurricularLoss
 from models.backbone import iresnet100
 
 
-def prepare_casia(data_dir, repo="SaffalPoosh/casia_web_face", shards=20):
-    """Unpack the parquet shards into data_dir/<label>/<n>.jpg once; return (paths, labels)."""
+def prepare_casia(data_dir, repo="SaffalPoosh/casia_web_face", shards=20, parquet_dir=None):
+    """Unpack the parquet shards into data_dir/<label>/<n>.jpg once; return (paths, labels).
+
+    With ``parquet_dir`` the shards are read from local disk (no internet needed,
+    e.g. on cluster compute nodes); otherwise they are fetched from Hugging Face.
+    """
     data_dir = Path(data_dir)
     index = data_dir / "index.tsv"
     if not index.is_file():
         import pyarrow.parquet as pq
-        from huggingface_hub import hf_hub_download
+        if not parquet_dir:
+            from huggingface_hub import hf_hub_download
         rows = []
         for s in range(shards):
             name = f"data/train-{s:05d}-of-{shards:05d}.parquet"
-            local = hf_hub_download(repo, name, repo_type="dataset")
+            local = str(Path(parquet_dir) / name) if parquet_dir else hf_hub_download(repo, name, repo_type="dataset")
             table = pq.read_table(local, columns=["image", "label"])
             for n, (img, label) in enumerate(zip(table.column("image").to_pylist(), table.column("label").to_pylist())):
                 path = data_dir / str(label) / f"{s}_{n}.jpg"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(img["bytes"])
                 rows.append(f"{path}\t{label}")
-            os.remove(local)  # keep disk usage low
+            if not parquet_dir:
+                os.remove(local)  # keep disk usage low; never delete the user's own copy
             print(f"unpacked shard {s + 1}/{shards} ({len(rows)} images)", flush=True)
         index.write_text("\n".join(rows))
     pairs = [line.split("\t") for line in index.read_text().splitlines()]
@@ -97,6 +103,8 @@ def export_backbone(backbone, path, note):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_dir", default="/content/casia")
+    ap.add_argument("--parquet_dir", help="local folder with the downloaded dataset (contains data/train-*.parquet)")
+    ap.add_argument("--prepare_only", action="store_true", help="unpack the images and exit (run on a CPU node)")
     ap.add_argument("--init", default="weights/recognition_backbone.pt", help="our Phase 1 checkpoint to start from")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--epochs", type=int, default=8)
@@ -109,7 +117,9 @@ def main():
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    paths, labels = prepare_casia(args.data_dir)
+    paths, labels = prepare_casia(args.data_dir, parquet_dir=args.parquet_dir)
+    if args.prepare_only:
+        print(f"Prepared {len(paths)} images in {args.data_dir}"); return
     num_classes = max(labels) + 1
     print(f"{len(paths)} images, {num_classes} identities, device {device}", flush=True)
 
